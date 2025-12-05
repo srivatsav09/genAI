@@ -1,139 +1,429 @@
-# import streamlit as st
-# from langchain_community.document_loaders import WebBaseLoader
+"""
+Streamlit application for generating personalized cold emails.
+"""
+import sys
+from pathlib import Path
 
-# from chain import Chain
-# from app.ResumeParser import Portfolio
-# from utils import clean_text
-
-
-# def create_streamlit_app(llm, portfolio, clean_text):
-#     st.title("📧 Cold Mail Generator")
-#     st.markdown(
-#         """
-#         Generate personalized cold emails from job postings using AI.
-#         Just paste a job URL below and let the app do the magic. ✨
-#         """
-#     )
-
-#     with st.container():
-#         st.subheader("🔗 Input Job Post URL")
-#         url_input = st.text_input("Enter a job post or company URL:", 
-#                                   value="https://careers.nike.com/cdn-security-engineer-waf/job/R-48004", 
-#                                   help="Paste the full URL to a job listing or career page.")
-#         submit_button = st.button("🚀 Generate Email")
-
-#     if submit_button:
-#         st.info("⏳ Processing... Please wait a few seconds.")
-#         try:
-#             loader = WebBaseLoader([url_input])
-#             data = clean_text(loader.load().pop().page_content)
-
-#             # Load portfolio and generate email
-#             portfolio.load_portfolio()
-#             jobs = llm.extract_jobs(data)
-
-#             if not jobs:
-#                 st.warning("⚠️ No jobs found in the content. Please check the URL.")
-#                 return
-
-#             st.subheader("📬 Generated Cold Emails")
-#             for i, job in enumerate(jobs, start=1):
-#                 with st.expander(f"Email #{i}: {job.get('title', 'Untitled Role')}"):
-#                     skills = job.get('skills', [])
-#                     links = portfolio.query_links(skills['required'])
-#                     email = llm.write_mail(job, links)
-#                     st.code(email.strip(), language='markdown')
-
-#         except Exception as e:
-#             st.error("❌ An error occurred while generating the email:")
-#             st.exception(e)
-
-#     st.markdown("---")
-#     st.caption("Made with ❤️ using LangChain + Streamlit")
-
-
-# if __name__ == "__main__":
-#     chain = Chain()
-#     portfolio = Portfolio()
-#     st.set_page_config(layout="wide", page_title="Cold Email Generator", page_icon="📧")
-#     create_streamlit_app(chain, portfolio, clean_text)
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import streamlit as st
 from langchain_community.document_loaders import WebBaseLoader
-from chain import Chain
-from resumeParser import ResumeParser  # renamed from portfolio.py
-from utils import clean_text
-from PyPDF2 import PdfReader
 
-def extract_text_from_pdf(uploaded_file):
-    reader = PdfReader(uploaded_file)
-    return " ".join(page.extract_text() for page in reader.pages if page.extract_text())
+from app.chain import Chain
+from app.resumeParser import ResumeParser, validate_resume_data
+from app.utils import (
+    clean_text,
+    extract_text_from_resume,
+    format_job_for_display,
+    validate_url
+)
+from app.config import Config
+from app.logger import setup_logger
+from app.matcher import SkillMatcher, rank_jobs
 
-def create_streamlit_app(llm, resume_parser, clean_text):
-    st.title("🎓 Student Resume → Cold Mail Generator")
-    st.markdown("Upload your resume and paste a job listing page to generate a personalized cold email!")
+logger = setup_logger(__name__)
 
-    with st.container():
-        uploaded_resume = st.file_uploader("📄 Upload your resume (PDF only)", type=["pdf"])
-        url_input = st.text_input("🔗 Paste the careers page URL", 
-                                  value="https://careers.nike.com/jobs",
-                                  help="This should be a page with multiple jobs listed.")
-        submit_button = st.button("🚀 Generate Email")
 
-    if submit_button:
-        if not uploaded_resume:
-            st.warning("⚠️ Please upload your resume first.")
-            return
+def initialize_session_state():
+    """Initialize session state variables."""
+    if 'generated_email' not in st.session_state:
+        st.session_state.generated_email = None
+    if 'match_result' not in st.session_state:
+        st.session_state.match_result = None
+    if 'resume_data' not in st.session_state:
+        st.session_state.resume_data = None
+    if 'score_breakdown' not in st.session_state:
+        st.session_state.score_breakdown = None
 
-        st.info("⏳ Processing your resume and job listings...")
 
-        try:
-            # Step 1: Parse resume
-            resume_text = extract_text_from_pdf(uploaded_resume)
-            resume_data = resume_parser.parse_resume(llm, resume_text)
-            skills = resume_data["skills"]
-            projects = resume_data["projects"]
-            experience = resume_data["experience"]
-
-            # Step 2: Scrape and clean job listings
-            loader = WebBaseLoader([url_input])
-            raw_data = loader.load().pop().page_content
-            cleaned_data = clean_text(raw_data)
-            job_list = llm.extract_jobs(cleaned_data)
-
-            # Step 3: Match best job
-            match_result = llm.match_best_job(job_list, skills, projects,experience)
-            matched_job = match_result["best_match"]
-            reason = match_result["reason"]
-            close_matches = match_result["close_matches"]
-
-            email = llm.write_mail(matched_job, projects, experience)
-
-            st.subheader("📬 Your Personalized Cold Email")
-            st.code(email.strip(), language='markdown')
-
-            st.markdown("### 🤔 Why This Job?")
-            st.success(reason)
-
-            if close_matches:
-                st.markdown("### 🧠 Other Potential Matches (And What You’re Missing)")
-                for match in close_matches:
-                    st.markdown(f"""
-                    **🧪 Role:** `{match["role"]}`  
-                    **🚫 Missing Skills:** {", ".join(match["missing_skills"])}  
-                    **📈 Tip:** {match["recommendation"]}
-                    """)
-
-        except Exception as e:
-            st.error("❌ An error occurred:")
-            st.exception(e)
-
+def render_header():
+    """Render the application header."""
+    st.title(f"{Config.APP_ICON} {Config.APP_TITLE}")
+    st.markdown(
+        """
+        Upload your resume and provide a careers page URL to generate a personalized cold email
+        tailored to the best matching job opportunity.
+        """
+    )
     st.markdown("---")
-    st.caption("Made for students with ❤️ using LangChain + Streamlit")
+
+
+def render_sidebar(resume_parser):
+    """Render the sidebar with settings and information."""
+    with st.sidebar:
+        st.header("Settings")
+
+        # User information
+        st.subheader("Your Information")
+        user_name = st.text_input(
+            "Name",
+            value=Config.DEFAULT_USER_NAME,
+            help="Your full name"
+        )
+        university = st.text_input(
+            "University",
+            value=Config.DEFAULT_UNIVERSITY,
+            help="Your university/college name"
+        )
+        year = st.text_input(
+            "Academic Year",
+            value=Config.DEFAULT_YEAR,
+            help="e.g., 4th year, Final year, etc."
+        )
+
+        # Email tone selection
+        st.subheader("Email Tone")
+        tone = st.selectbox(
+            "Select tone",
+            options=Config.EMAIL_TONES,
+            index=Config.EMAIL_TONES.index(Config.DEFAULT_EMAIL_TONE),
+            help="Choose the tone for your cold email"
+        )
+
+        st.markdown("---")
+
+        # RAG Status
+        if resume_parser.use_rag:
+            st.success("✅ RAG Mode: Active")
+            st.caption("Using intelligent chunking for 60-80% faster processing")
+        else:
+            st.info("ℹ️ RAG Mode: Disabled")
+            st.caption("Processing full resume")
+
+        st.markdown("---")
+
+        # Information
+        st.subheader("About")
+        st.markdown(
+            """
+            This tool helps students:
+            - Parse their resume automatically (with RAG!)
+            - Match skills with job requirements
+            - Generate personalized cold emails
+            - Identify skill gaps for other opportunities
+            """
+        )
+
+        return user_name, university, year, tone
+
+
+def render_input_section():
+    """Render the input section for resume and URL."""
+    col1, col2 = st.columns([1, 1])
+
+    with col1:
+        st.subheader("1. Upload Your Resume")
+        uploaded_resume = st.file_uploader(
+            "Choose your resume (PDF only)",
+            type=Config.ALLOWED_RESUME_FORMATS,
+            help=f"Maximum file size: {Config.MAX_UPLOAD_SIZE_MB}MB"
+        )
+
+        if uploaded_resume:
+            st.success(f"Uploaded: {uploaded_resume.name}")
+
+    with col2:
+        st.subheader("2. Careers Page URL")
+        url_input = st.text_input(
+            "Enter the careers page URL",
+            value="https://careers.nike.com/jobs",
+            help="Paste the URL of the company's careers/jobs page"
+        )
+
+        if url_input and not validate_url(url_input):
+            st.warning("Please enter a valid URL starting with http:// or https://")
+
+    return uploaded_resume, url_input
+
+
+def render_results(match_result: dict, email: str, tone: str, score_breakdown: dict = None):
+    """Render the results section with job match and generated email."""
+
+    # Best Match
+    st.subheader("Best Job Match")
+    best_match = match_result.get('best_match', {})
+
+    with st.expander(f"📌 {best_match.get('role', 'Unknown Role')}", expanded=True):
+        st.markdown(format_job_for_display(best_match))
+
+    # Show score breakdown if available (outside the expander to avoid nesting)
+    if score_breakdown:
+        st.markdown("---")
+        st.markdown("### Match Score Breakdown")
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric(
+                "Overall Match",
+                f"{score_breakdown.get('overall_score', 0):.1f}%"
+            )
+        with col2:
+            req_match = score_breakdown.get('required_skills_match', {})
+            st.metric(
+                "Required Skills",
+                f"{req_match.get('percentage', 0):.1f}%"
+            )
+        with col3:
+            st.metric(
+                "Experience Match",
+                f"{score_breakdown.get('experience_score', 0):.1f}%"
+            )
+
+        # Detailed skill breakdown in a separate expander
+        with st.expander("View Detailed Skill Analysis"):
+            req_match = score_breakdown.get('required_skills_match', {})
+            des_match = score_breakdown.get('desired_skills_match', {})
+
+            if req_match.get('matched'):
+                st.markdown("**✅ Matched Required Skills:**")
+                for skill in req_match['matched']:
+                    st.markdown(f"- {skill}")
+
+            if req_match.get('missing'):
+                st.markdown("\n**❌ Missing Required Skills:**")
+                for skill in req_match['missing']:
+                    st.markdown(f"- {skill}")
+
+            if des_match.get('matched'):
+                st.markdown("\n**✅ Matched Desired Skills:**")
+                for skill in des_match['matched']:
+                    st.markdown(f"- {skill}")
+
+    # Reason for match
+    st.subheader("Why This Job?")
+    reason = match_result.get('reason', 'No explanation provided')
+    st.info(reason)
+
+    # Generated Email
+    st.subheader(f"Generated Cold Email ({tone.capitalize()} Tone)")
+
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        st.markdown("Copy the email below:")
+    with col2:
+        if st.button("📋 Copy Email"):
+            st.toast("Email copied to clipboard!")
+
+    st.text_area(
+        "Your personalized email",
+        value=email,
+        height=400,
+        label_visibility="collapsed"
+    )
+
+    # Download button
+    st.download_button(
+        label="📥 Download Email as Text",
+        data=email,
+        file_name=f"cold_email_{best_match.get('role', 'job').replace(' ', '_').lower()}.txt",
+        mime="text/plain"
+    )
+
+    # Close matches / Skill gaps
+    close_matches = match_result.get('close_matches', [])
+    if close_matches:
+        st.markdown("---")
+        st.subheader("Other Potential Opportunities")
+        st.markdown(
+            "These roles are also good matches, but you're missing some skills. "
+            "Here's how you can improve:"
+        )
+
+        for idx, match in enumerate(close_matches, start=1):
+            with st.expander(f"Alternative {idx}: {match.get('role', 'Unknown Role')}"):
+                st.markdown(f"**Missing Skills:**")
+                missing_skills = match.get('missing_skills', [])
+                for skill in missing_skills:
+                    st.markdown(f"- {skill}")
+
+                st.markdown(f"\n**Recommendation:**")
+                st.info(match.get('recommendation', 'No recommendation provided'))
+
+
+def process_application(
+    uploaded_resume,
+    url_input: str,
+    user_name: str,
+    university: str,
+    year: str,
+    tone: str,
+    chain: Chain,
+    resume_parser: ResumeParser
+):
+    """Process the resume and generate cold email."""
+
+    # Validation
+    if not uploaded_resume:
+        st.warning("Please upload your resume first.")
+        return False
+
+    if not url_input or not validate_url(url_input):
+        st.warning("Please enter a valid careers page URL.")
+        return False
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    try:
+        # Step 1: Extract resume text
+        status_text.text("Step 1/5: Extracting text from resume...")
+        progress_bar.progress(20)
+
+        # Determine file type from filename
+        file_extension = uploaded_resume.name.split('.')[-1].lower()
+        resume_text = extract_text_from_resume(uploaded_resume, file_extension)
+        logger.info(f"Extracted {len(resume_text)} characters from {file_extension.upper()} resume")
+
+        # Step 2: Parse resume
+        status_text.text("Step 2/5: Analyzing your resume...")
+        progress_bar.progress(40)
+        resume_data = resume_parser.parse_resume(chain, resume_text)
+
+        if not validate_resume_data(resume_data):
+            st.error("Failed to parse resume properly. Please ensure your resume is well-formatted.")
+            return False
+
+        st.session_state.resume_data = resume_data
+        logger.info("Resume parsed successfully")
+
+        # Step 3: Scrape jobs from URL
+        status_text.text("Step 3/5: Fetching job listings from URL...")
+        progress_bar.progress(60)
+        loader = WebBaseLoader([url_input])
+        raw_data = loader.load().pop().page_content
+        cleaned_data = clean_text(raw_data)
+        logger.info(f"Scraped and cleaned {len(cleaned_data)} characters from URL")
+
+        # Step 4: Extract and match jobs
+        status_text.text("Step 4/5: Matching jobs with your profile...")
+        progress_bar.progress(75)
+        job_list = chain.extract_jobs(cleaned_data)
+
+        if not job_list:
+            st.warning("No job listings found on this page. Please try a different URL.")
+            return False
+
+        logger.info(f"Found {len(job_list)} job(s)")
+
+        # Use skill matcher to rank jobs and get detailed scores
+        matcher = SkillMatcher(similarity_threshold=Config.MIN_SKILL_MATCH_THRESHOLD)
+        ranked_jobs = rank_jobs(resume_data, job_list, matcher)
+
+        # Get the best match score
+        _, best_score = ranked_jobs[0]
+
+        # Also use LLM for comprehensive matching analysis
+        match_result = chain.match_best_job(
+            job_list,
+            resume_data.get('skills', []),
+            resume_data.get('projects', []),
+            resume_data.get('experience', [])
+        )
+        st.session_state.match_result = match_result
+        st.session_state.score_breakdown = best_score
+
+        # Step 5: Generate email
+        status_text.text("Step 5/5: Generating your personalized cold email...")
+        progress_bar.progress(90)
+
+        email = chain.write_mail(
+            match_result['best_match'],
+            resume_data.get('projects', []),
+            resume_data.get('experience', []),
+            tone=tone,
+            user_name=user_name,
+            university=university,
+            year=year
+        )
+        st.session_state.generated_email = email
+
+        progress_bar.progress(100)
+        status_text.text("Done! Your cold email is ready.")
+        logger.info("Successfully generated cold email")
+
+        # Clean up RAG session if it was used
+        if resume_data and '_rag_session_id' in resume_data:
+            resume_parser.cleanup_session(resume_data['_rag_session_id'])
+            logger.info("Cleaned up RAG session data")
+
+        return True
+
+    except Exception as e:
+        logger.error(f"Error during processing: {str(e)}")
+        st.error(f"An error occurred: {str(e)}")
+        st.exception(e)
+        return False
+    finally:
+        progress_bar.empty()
+        status_text.empty()
+
+
+def main():
+    """Main application function."""
+    # Configure page
+    st.set_page_config(
+        layout=Config.PAGE_LAYOUT,
+        page_title=Config.APP_TITLE,
+        page_icon=Config.APP_ICON
+    )
+
+    # Initialize
+    initialize_session_state()
+
+    # Initialize components
+    try:
+        chain = Chain()
+        resume_parser = ResumeParser()
+    except Exception as e:
+        st.error(f"Failed to initialize application: {str(e)}")
+        st.stop()
+
+    # Render UI
+    render_header()
+    user_name, university, year, tone = render_sidebar(resume_parser)
+    uploaded_resume, url_input = render_input_section()
+
+    # Generate button
+    st.markdown("---")
+    _, col2, _ = st.columns([1, 1, 1])
+    with col2:
+        generate_button = st.button(
+            "🚀 Generate Cold Email",
+            type="primary",
+            use_container_width=True
+        )
+
+    # Process
+    if generate_button:
+        success = process_application(
+            uploaded_resume,
+            url_input,
+            user_name,
+            university,
+            year,
+            tone,
+            chain,
+            resume_parser
+        )
+
+        if success:
+            st.success("Email generated successfully!")
+
+    # Display results if available
+    if st.session_state.generated_email and st.session_state.match_result:
+        st.markdown("---")
+        render_results(
+            st.session_state.match_result,
+            st.session_state.generated_email,
+            tone,
+            st.session_state.score_breakdown
+        )
+
+    # Footer
+    st.markdown("---")
+    st.caption("Made for students | Powered by LangChain + Groq + Streamlit")
 
 
 if __name__ == "__main__":
-    chain = Chain()
-    resume_parser = ResumeParser()
-    st.set_page_config(layout="wide", page_title="Cold Email Generator", page_icon="📧")
-    create_streamlit_app(chain, resume_parser, clean_text)
+    main()
