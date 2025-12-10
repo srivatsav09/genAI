@@ -4,24 +4,44 @@ Streamlit application for generating personalized cold emails.
 import sys
 from pathlib import Path
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add parent directory to path for imports (works from both root and app directory)
+current_dir = Path(__file__).parent
+parent_dir = current_dir.parent
+if str(parent_dir) not in sys.path:
+    sys.path.insert(0, str(parent_dir))
+if str(current_dir) not in sys.path:
+    sys.path.insert(0, str(current_dir))
 
 import streamlit as st
 from langchain_community.document_loaders import WebBaseLoader
 
-from app.chain import Chain
-from app.resumeParser import ResumeParser, validate_resume_data
-from app.job_rag import JobRAG
-from app.utils import (
-    clean_text,
-    extract_text_from_resume,
-    format_job_for_display,
-    validate_url
-)
-from app.config import Config
-from app.logger import setup_logger
-from app.matcher import SkillMatcher, rank_jobs
+try:
+    from app.chain import Chain
+    from app.resumeParser import ResumeParser, validate_resume_data
+    from app.job_rag import JobRAG
+    from app.utils import (
+        clean_text,
+        extract_text_from_resume,
+        format_job_for_display,
+        validate_url
+    )
+    from app.config import Config
+    from app.logger import setup_logger
+    from app.matcher import SkillMatcher, rank_jobs
+except ImportError:
+    # Fallback if running from app directory
+    from chain import Chain
+    from resumeParser import ResumeParser, validate_resume_data
+    from job_rag import JobRAG
+    from utils import (
+        clean_text,
+        extract_text_from_resume,
+        format_job_for_display,
+        validate_url
+    )
+    from config import Config
+    from logger import setup_logger
+    from matcher import SkillMatcher, rank_jobs
 
 logger = setup_logger(__name__)
 
