@@ -53,6 +53,7 @@ app.log
 
 # ChromaDB / Vector stores
 vectorstore/
+vectorstore_*/
 chroma.sqlite3
 
 # Jupyter Notebook
