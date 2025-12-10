@@ -12,6 +12,7 @@ from langchain_community.document_loaders import WebBaseLoader
 
 from app.chain import Chain
 from app.resumeParser import ResumeParser, validate_resume_data
+from app.job_rag import JobRAG
 from app.utils import (
     clean_text,
     extract_text_from_resume,
@@ -84,12 +85,15 @@ def render_sidebar(resume_parser):
         st.markdown("---")
 
         # RAG Status
+        st.subheader("🚀 RAG Features")
         if resume_parser.use_rag:
-            st.success("✅ RAG Mode: Active")
-            st.caption("Using intelligent chunking for 60-80% faster processing")
+            st.success("✅ Resume RAG: Active")
+            st.caption("Chunking resume for 60-80% faster parsing")
         else:
-            st.info("ℹ️ RAG Mode: Disabled")
-            st.caption("Processing full resume")
+            st.info("ℹ️ Resume RAG: Disabled")
+
+        st.success("✅ Job RAG: Active")
+        st.caption("Semantic job matching for better results")
 
         st.markdown("---")
 
@@ -249,9 +253,10 @@ def process_application(
     year: str,
     tone: str,
     chain: Chain,
-    resume_parser: ResumeParser
+    resume_parser: ResumeParser,
+    job_rag: JobRAG
 ):
-    """Process the resume and generate cold email."""
+    """Process the resume and generate cold email with RAG-based job matching."""
 
     # Validation
     if not uploaded_resume:
@@ -264,11 +269,12 @@ def process_application(
 
     progress_bar = st.progress(0)
     status_text = st.empty()
+    job_session_id = None
 
     try:
         # Step 1: Extract resume text
-        status_text.text("Step 1/5: Extracting text from resume...")
-        progress_bar.progress(20)
+        status_text.text("Step 1/6: Extracting text from resume...")
+        progress_bar.progress(15)
 
         # Determine file type from filename
         file_extension = uploaded_resume.name.split('.')[-1].lower()
@@ -276,8 +282,8 @@ def process_application(
         logger.info(f"Extracted {len(resume_text)} characters from {file_extension.upper()} resume")
 
         # Step 2: Parse resume
-        status_text.text("Step 2/5: Analyzing your resume...")
-        progress_bar.progress(40)
+        status_text.text("Step 2/6: Analyzing your resume with RAG...")
+        progress_bar.progress(30)
         resume_data = resume_parser.parse_resume(chain, resume_text)
 
         if not validate_resume_data(resume_data):
@@ -288,16 +294,16 @@ def process_application(
         logger.info("Resume parsed successfully")
 
         # Step 3: Scrape jobs from URL
-        status_text.text("Step 3/5: Fetching job listings from URL...")
-        progress_bar.progress(60)
+        status_text.text("Step 3/6: Fetching job listings from URL...")
+        progress_bar.progress(45)
         loader = WebBaseLoader([url_input])
         raw_data = loader.load().pop().page_content
         cleaned_data = clean_text(raw_data)
         logger.info(f"Scraped and cleaned {len(cleaned_data)} characters from URL")
 
-        # Step 4: Extract and match jobs
-        status_text.text("Step 4/5: Matching jobs with your profile...")
-        progress_bar.progress(75)
+        # Step 4: Extract jobs and store in RAG
+        status_text.text("Step 4/6: Extracting and indexing jobs with RAG...")
+        progress_bar.progress(60)
         job_list = chain.extract_jobs(cleaned_data)
 
         if not job_list:
@@ -306,16 +312,49 @@ def process_application(
 
         logger.info(f"Found {len(job_list)} job(s)")
 
-        # Use skill matcher to rank jobs and get detailed scores
+        # Store jobs in JobRAG
+        import uuid
+        job_session_id = f"jobs_{uuid.uuid4().hex[:8]}"
+        job_rag.store_jobs(job_list, job_session_id)
+        logger.info(f"Stored {len(job_list)} jobs in RAG system")
+
+        # Step 5: Semantic search for top matching jobs
+        status_text.text("Step 5/6: Finding best matches using semantic search...")
+        progress_bar.progress(75)
+
+        # Use RAG to find top 10 matching jobs
+        top_matching_jobs = job_rag.search_matching_jobs(
+            session_id=job_session_id,
+            candidate_skills=resume_data.get('skills', []),
+            candidate_experience=resume_data.get('experience', []),
+            candidate_projects=resume_data.get('projects', []),
+            n_results=min(10, len(job_list))  # Top 10 or fewer
+        )
+
+        if not top_matching_jobs:
+            st.warning("No matching jobs found. Try a different careers page.")
+            return False
+
+        logger.info(f"RAG found {len(top_matching_jobs)} matching jobs")
+
+        # Convert RAG results back to job dictionaries for compatibility
+        # We need to find the original jobs from job_list based on metadata
+        matched_job_objects = []
+        for rag_result in top_matching_jobs:
+            job_index = rag_result['metadata'].get('job_index')
+            if job_index is not None and job_index < len(job_list):
+                matched_job_objects.append(job_list[job_index])
+
+        # Use skill matcher to get detailed scores for top matches
         matcher = SkillMatcher(similarity_threshold=Config.MIN_SKILL_MATCH_THRESHOLD)
-        ranked_jobs = rank_jobs(resume_data, job_list, matcher)
+        ranked_jobs = rank_jobs(resume_data, matched_job_objects, matcher)
 
         # Get the best match score
         _, best_score = ranked_jobs[0]
 
-        # Also use LLM for comprehensive matching analysis
+        # Use LLM for comprehensive matching analysis on TOP matches only (not all jobs)
         match_result = chain.match_best_job(
-            job_list,
+            matched_job_objects,  # Only top RAG-matched jobs, not all jobs
             resume_data.get('skills', []),
             resume_data.get('projects', []),
             resume_data.get('experience', [])
@@ -323,8 +362,8 @@ def process_application(
         st.session_state.match_result = match_result
         st.session_state.score_breakdown = best_score
 
-        # Step 5: Generate email
-        status_text.text("Step 5/5: Generating your personalized cold email...")
+        # Step 6: Generate email
+        status_text.text("Step 6/6: Generating your personalized cold email...")
         progress_bar.progress(90)
 
         email = chain.write_mail(
@@ -342,10 +381,14 @@ def process_application(
         status_text.text("Done! Your cold email is ready.")
         logger.info("Successfully generated cold email")
 
-        # Clean up RAG session if it was used
+        # Clean up RAG sessions
         if resume_data and '_rag_session_id' in resume_data:
             resume_parser.cleanup_session(resume_data['_rag_session_id'])
-            logger.info("Cleaned up RAG session data")
+            logger.info("Cleaned up resume RAG session data")
+
+        if job_session_id:
+            job_rag.delete_session(job_session_id)
+            logger.info("Cleaned up job RAG session data")
 
         return True
 
@@ -375,6 +418,7 @@ def main():
     try:
         chain = Chain()
         resume_parser = ResumeParser()
+        job_rag = JobRAG()
     except Exception as e:
         st.error(f"Failed to initialize application: {str(e)}")
         st.stop()
@@ -404,7 +448,8 @@ def main():
             year,
             tone,
             chain,
-            resume_parser
+            resume_parser,
+            job_rag
         )
 
         if success:
