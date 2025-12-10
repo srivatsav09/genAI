@@ -21,7 +21,8 @@ SAMPLE_COMPANIES = [
         "avg_salary": 145000,
         "roles_offered": ["Software Engineer", "Data Scientist", "ML Engineer", "Product Manager", "SRE"],
         "locations": ["Mountain View, CA", "New York, NY", "Seattle, WA", "Austin, TX"],
-        "years_active": [2020, 2021, 2022, 2023, 2024]
+        "years_active": [2020, 2021, 2022, 2023, 2024],
+        "yearly_filings": {"2020": 7234, "2021": 7845, "2022": 8012, "2023": 8156, "2024": 8234}
     },
     {
         "company_name": "Amazon.com Services LLC",
